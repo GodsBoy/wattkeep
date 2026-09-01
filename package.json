@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test:unit": "vitest run",
+    "test:contracts": "vitest run src/webmcp/contracts.test.ts src/webmcp/register-tools.test.ts",
     "test:watch": "vitest",
     "typecheck": "tsc -b --pretty false"
   },
