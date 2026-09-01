@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ArrowRight,
   Check,
   ClipboardCheck,
   FileDiff,
@@ -7,7 +8,7 @@ import {
   MessageSquareWarning,
   X,
 } from 'lucide-react'
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 import { formatEnergy, formatPercent, formatPower } from '../domain/scenario'
 import type { LoadId } from '../domain/types'
@@ -66,7 +67,10 @@ export default function ProposalDesk({
   const [capability, setCapability] = useState<CommitCapability | null>(null)
   const [dialogError, setDialogError] = useState<RecoverableError | null>(null)
   const [committing, setCommitting] = useState(false)
-  const [committedSummary, setCommittedSummary] = useState<CommitResult | null>(null)
+  const [committedSummary, setCommittedSummary] = useState<{
+    readonly result: CommitResult
+    readonly sessionEpoch: number
+  } | null>(null)
   const [discarding, setDiscarding] = useState(false)
   const invokerRef = useRef<HTMLButtonElement | null>(null)
   const cancelRef = useRef<HTMLButtonElement | null>(null)
@@ -74,17 +78,32 @@ export default function ProposalDesk({
   const dialogRef = useRef<HTMLDivElement | null>(null)
   const errorRef = useRef<HTMLParagraphElement | null>(null)
   const committedSummaryRef = useRef<HTMLDivElement | null>(null)
+  const localCommitIdRef = useRef<string | null>(null)
   const dialogTarget = proposal ?? dialogProposal
+  const dialogProposalId = dialogProposal?.proposalId ?? null
+  const activeProposalId = proposal?.proposalId ?? null
+  const liveCommitId = liveSnapshot.lastCommit?.commitId ?? null
+  const summaryMatchesLiveCommit = committedSummary !== null
+    && liveSnapshot.lastCommit !== null
+    && committedSummary.sessionEpoch === liveSnapshot.sessionEpoch
+    && liveSnapshot.lastCommit.commitId === committedSummary.result.commitId
+    && liveSnapshot.lastCommit.proposalId === committedSummary.result.proposalId
+    && liveSnapshot.lastCommit.revision === committedSummary.result.revision
+  const visibleCommittedSummary = summaryMatchesLiveCommit && proposal === null
+    ? committedSummary
+    : null
+  const dialogMatchesLiveProposal = dialogProposalId !== null
+    && activeProposalId === dialogProposalId
   const capabilityCurrent = capability !== null
     && dialogTarget !== null
     && dialogTarget.proposalId === capability.proposalId
     && dialogTarget.status === 'review-requested'
 
-  const report = (message: string): void => {
+  const report = useCallback((message: string): void => {
     onLiveMessage?.(message)
-  }
+  }, [onLiveMessage])
 
-  const closeDialog = (focusTarget: 'invoker' | 'comparison' | 'none' = 'invoker'): void => {
+  const closeDialog = useCallback((focusTarget: 'invoker' | 'comparison' | 'none' = 'invoker'): void => {
     setDialogOpen(false)
     setDialogProposal(null)
     setCapability(null)
@@ -99,7 +118,7 @@ export default function ProposalDesk({
     if (focusTarget === 'invoker') {
       window.setTimeout(() => invokerRef.current?.focus(), 0)
     }
-  }
+  }, [])
 
   useEffect(() => {
     if (!dialogOpen) return
@@ -111,10 +130,37 @@ export default function ProposalDesk({
   }, [dialogOpen, dialogTarget?.status])
 
   useEffect(() => {
-    if (committedSummary !== null) {
+    if (!dialogOpen || dialogProposalId === null || activeProposalId === dialogProposalId) return
+    // A successful local commit also removes the active proposal. The commit
+    // handler closes that dialog in the same update, so do not report it as an
+    // external removal when its commit record is already known here.
+    if (activeProposalId === null
+      && localCommitIdRef.current !== null
+      && liveCommitId === localCommitIdRef.current) return
+
+    window.setTimeout(() => {
+      closeDialog('comparison')
+      report(activeProposalId === null
+        ? 'Commit confirmation closed because the proposal was removed externally. No policy changed; stage and review a new proposal to continue.'
+        : 'Commit confirmation closed because the active proposal changed externally. Review the new proposal before committing.')
+    }, 0)
+  }, [activeProposalId, closeDialog, dialogOpen, dialogProposalId, liveCommitId, report])
+
+  useEffect(() => {
+    if (committedSummary === null) return
+    if (!summaryMatchesLiveCommit || proposal !== null) {
+      const staleCommitId = committedSummary.result.commitId
+      window.setTimeout(() => {
+        setCommittedSummary((current) => current?.result.commitId === staleCommitId ? null : current)
+      }, 0)
+    }
+  }, [committedSummary, liveSnapshot, proposal, summaryMatchesLiveCommit])
+
+  useEffect(() => {
+    if (visibleCommittedSummary !== null) {
       committedSummaryRef.current?.focus()
     }
-  }, [committedSummary])
+  }, [visibleCommittedSummary])
 
   const openCommitDialog = (event: React.MouseEvent<HTMLButtonElement>): void => {
     invokerRef.current = event.currentTarget
@@ -180,7 +226,11 @@ export default function ProposalDesk({
     }
 
     setDialogError(null)
-    setCommittedSummary(outcome.data)
+    localCommitIdRef.current = outcome.data.commitId
+    setCommittedSummary({
+      result: outcome.data,
+      sessionEpoch: store.getSnapshot().sessionEpoch,
+    })
     closeDialog('none')
     report(store.getSnapshot().persistenceMode === 'memory-only'
       ? `Commit recorded for ${outcome.data.afterPolicy.planName} in memory. This session is not persisted.`
@@ -227,7 +277,6 @@ export default function ProposalDesk({
         <div className="proposal-content">
           <div className="proposal-banner">
             <div>
-              <span className="status-label">Active proposal</span>
               <h3>{proposal.planName}</h3>
               <p>{proposal.simulation.feasible ? 'Feasible under the current reserve target.' : 'This simulation breaches reserve and cannot be committed.'}</p>
             </div>
@@ -248,7 +297,7 @@ export default function ProposalDesk({
                 <div><dt>Base revision</dt><dd>r{proposal.baseRevision}</dd></div>
               </dl>
             </div>
-            <div className="proposal-arrow" aria-hidden="true">→</div>
+            <div className="proposal-arrow" aria-hidden="true"><ArrowRight size={18} /></div>
             <div className="proposal-column proposal-column--after">
               <p className="panel-kicker">After human commit</p>
               <h3>{proposal.afterPolicy.planName}</h3>
@@ -319,12 +368,12 @@ export default function ProposalDesk({
         </div>
       )}
 
-      {committedSummary !== null && (
+      {visibleCommittedSummary !== null && (
         <div className="commit-summary" role="status" tabIndex={-1} ref={committedSummaryRef}>
           <Check size={18} aria-hidden="true" />
           <div>
-            <strong>Committed {committedSummary.afterPolicy.planName}</strong>
-            <span>Revision r{committedSummary.revision}. The active proposal is closed.</span>
+            <strong>Committed {visibleCommittedSummary.result.afterPolicy.planName}</strong>
+            <span>Revision r{visibleCommittedSummary.result.revision}. The active proposal is closed.</span>
             {liveSnapshot.persistenceMode === 'memory-only' && (
               <span className="summary-warning">Memory-only session: the commit is successful in this session, but not persisted to storage.</span>
             )}
@@ -332,7 +381,7 @@ export default function ProposalDesk({
         </div>
       )}
 
-      {dialogOpen && dialogTarget !== null && (
+      {dialogOpen && dialogTarget !== null && dialogMatchesLiveProposal && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
           if (event.target === event.currentTarget) {
             closeDialog()

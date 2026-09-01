@@ -124,7 +124,7 @@ The boundaries are intentional:
 
 Read-only domain operations check an `AbortSignal` before work and after their explicit asynchronous yield. The adapter also checks cancellation at invocation and after awaited read-only work. A mutating command is linearised at its store transition: if cancellation fires immediately after that transition, the successful mutation result is returned so the caller cannot mistake a committed state change for an aborted one.
 
-WebMCP registration is all-or-nothing. A single lifecycle `AbortController` is passed to each page registration. Cleanup aborts that signal, which removes registered tools in a compliant host. If a later registration fails, cleanup runs and the app reports the manual interface rather than leaving a partial tool set.
+WebMCP registration is all-or-nothing. A single lifecycle `AbortController` is passed to each page registration and is bound to the owning React effect before registration starts. Cleanup aborts that signal, which removes registered tools in a compliant host, including during a pending registration. If a later registration fails, cleanup runs and the app reports the manual interface rather than leaving a partial tool set.
 
 ### Persistence degradation
 
@@ -146,8 +146,8 @@ The current local verification set is:
 
 | Command | Result |
 | --- | --- |
-| `npm run test:unit` | 48 unit and component tests pass |
-| `npm run test:contracts` | 13 WebMCP contract tests pass |
+| `npm run test:unit` | 62 unit and component tests pass |
+| `npm run test:contracts` | 15 WebMCP contract tests pass |
 | `npm run test:e2e` | 13 Playwright end-to-end tests pass |
 | `npm run test:a11y` | Seven accessibility, responsive, and smoke tests pass |
 | `npm run typecheck` | Passes |

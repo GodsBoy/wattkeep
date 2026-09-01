@@ -31,6 +31,11 @@ test.describe('manual fallback and safety paths', () => {
     await confirm.press('Enter')
     await expect(page.getByText('Committed Balanced Night')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Undo latest change' })).toBeEnabled()
+    await page.getByRole('button', { name: 'Undo latest change' }).click()
+    await expect(page.getByText('Undo completed. Essential Reserve is restored as revision 3.')).toBeVisible()
+    await expect(page.locator('.status-meta')).toContainText('Essential Reserve')
+    await expect(page.locator('.status-meta')).toContainText('r3')
+    await expect(page.getByText('Commit undone')).toBeVisible()
 
     await stageAndReview(page)
     await page.getByRole('button', { name: 'Review and commit' }).click()

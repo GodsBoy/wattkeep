@@ -8,7 +8,7 @@ These notes describe the state of the OpenAI WebMCP Challenge project at the cur
 - [x] Licence: the repository includes the MIT licence in [LICENSE](../LICENSE), with copyright 2026 Dewaldt Huysamen.
 - [x] Documentation: the product story, setup, tool contract, safety boundary, architecture, accessibility notes, and timed demo are documented in [README.md](../README.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [DEMO_SCRIPT.md](DEMO_SCRIPT.md).
 - [x] Tests: unit, component, WebMCP contract, Playwright end-to-end, accessibility, responsive, fallback, stale, undo, reset, and preview smoke coverage is present.
-- [x] Local verification: the current result set is 48 unit and component tests, 13 WebMCP contract tests, and 13 Playwright end-to-end tests. `test:a11y` invokes seven accessibility, responsive, and smoke tests. Typecheck, lint, and production build pass.
+- [x] Local verification: the current result set is 62 unit and component tests, 15 WebMCP contract tests, and 13 Playwright end-to-end tests. `test:a11y` invokes seven accessibility, responsive, and smoke tests. Typecheck, lint, and production build pass.
 - [x] Native local WebMCP smoke: Chromium 151.0.7922.108 with WebMCP testing enabled exposed `document.modelContext`, registered exactly the eight page tools, exposed no forbidden approval, commit, or undo tool, and completed inspect, Balanced Night simulation, comparison, recoverable unknown-simulation handling, staging, review, and visible Review and commit synchronisation. The smoke stopped before human commit, as intended. A pre-aborted native execution produced the browser transport's `AbortError` behaviour.
 
 ## Verification commands

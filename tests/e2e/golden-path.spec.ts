@@ -113,9 +113,8 @@ test.describe('WebMCP golden path', () => {
       intervalIndex: 1,
     })
     expect(explanation).toMatchObject({ ok: true, tool: 'explain_interval' })
-    // Tool execution caches evidence; the UI selection makes that evidence
-    // visible in the human-facing timeline.
-    await page.getByRole('button', { name: 'Explain 19:00 to 20:00' }).click()
+    // Tool execution selects the simulation and interval in the human-facing
+    // timeline as soon as the evidence is cached.
     await expect(page.getByRole('heading', { name: '19:00 to 20:00' })).toBeVisible()
 
     const staged = await executeTool(page, 'stage_plan', {

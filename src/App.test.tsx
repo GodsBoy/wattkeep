@@ -1,8 +1,10 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import App from './App'
 import { createStore } from './state/store'
+import type { ModelContext, ModelContextTool } from './webmcp/model-context'
 
 const renderApp = () => {
   const appStore = createStore({ storage: null })
@@ -79,6 +81,72 @@ describe('WattKeep manual control room', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Explain 02:00 to 03:00' }))
     await screen.findByText(/From 02:00 to 03:00/)
     expect(screen.getByText(/below the 2.70 kWh reserve/i)).toBeInTheDocument()
+  })
+
+  it('renders agent comparisons and explanations in the manual controls', async () => {
+    const appStore = renderApp()
+    const comparison = await runInAct(() => appStore.agent.comparePlans({
+      planIds: ['essential-reserve', 'balanced-night'],
+      sessionEpoch: appStore.getSnapshot().sessionEpoch,
+    }))
+    if (!comparison.ok) throw new Error(comparison.error.message)
+
+    const results = await screen.findByRole('region', { name: 'Ranked plan results' })
+    expect(within(results).getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent)).toEqual([
+      'Essential Reserve',
+      'Balanced Night',
+    ])
+    expect(screen.getByRole('checkbox', { name: 'Compare Comfort Carry' })).not.toBeChecked()
+
+    const balanced = comparison.data.ranked.find((entry) => entry.planId === 'balanced-night')
+    if (balanced === undefined) throw new Error('Expected Balanced Night in the comparison')
+    const explanation = await runInAct(() => appStore.agent.explainInterval({
+      simulationId: balanced.simulation.simulationId,
+      intervalIndex: 1,
+      sessionEpoch: appStore.getSnapshot().sessionEpoch,
+    }))
+    if (!explanation.ok) throw new Error(explanation.error.message)
+
+    expect(screen.getByRole('radio', { name: 'Use Balanced Night as candidate' })).toBeChecked()
+    expect(await screen.findByRole('heading', { name: '19:00 to 20:00' })).toBeInTheDocument()
+  })
+
+  it('aborts deferred registration before StrictMode can register duplicate tools', async () => {
+    const appStore = createStore({ storage: null })
+    const activeTools = new Map<string, ModelContextTool>()
+    let firstRegistration = true
+    let duplicateRejected = false
+    let abortedRegistrations = 0
+    const webMcpTarget: ModelContext = {
+      registerTool: (tool, options) => {
+        if (activeTools.has(tool.name)) {
+          duplicateRejected = true
+          return Promise.reject(new Error(`Duplicate registration: ${tool.name}`))
+        }
+        activeTools.set(tool.name, tool)
+        options.signal.addEventListener('abort', () => {
+          abortedRegistrations += 1
+          activeTools.delete(tool.name)
+        }, { once: true })
+        if (firstRegistration) {
+          firstRegistration = false
+          return new Promise<undefined>((resolve) => {
+            options.signal.addEventListener('abort', () => resolve(undefined), { once: true })
+          })
+        }
+        return Promise.resolve(undefined)
+      },
+    }
+
+    render(
+      <StrictMode>
+        <App store={appStore} webMcpTarget={webMcpTarget} />
+      </StrictMode>,
+    )
+
+    await waitFor(() => expect(screen.getByText('WebMCP tools registered')).toBeInTheDocument())
+    expect(duplicateRejected).toBe(false)
+    expect(abortedRegistrations).toBeGreaterThan(0)
   })
 
   it('syncs tool-driven stage, review, discard, refresh conflict, commit and undo changes', async () => {

@@ -145,7 +145,7 @@ The adapter converts a domain or store outcome into one of two browser envelopes
 
 The app feature detects `document.modelContext` and also accepts a context object for tests. If no context or usable `registerTool` function exists, registration returns manual mode. If a registration is rejected, all prior registrations are cleaned up and manual mode is shown. Registration is therefore all-or-nothing.
 
-One lifecycle `AbortController` is shared by all eight registrations. The registration signal is passed to the host, and cleanup aborts it. The contract-faithful browser fake removes each tool when that signal aborts, matching the intended WebMCP lifecycle. React calls cleanup when the app unmounts or the target changes.
+One lifecycle `AbortController` is shared by all eight registrations and bound to the owning React effect before the first host call. The registration signal is passed to the host, and cleanup aborts it even while registration is pending. The contract-faithful browser fake removes each tool when that signal aborts, matching the intended WebMCP lifecycle. React calls cleanup when the app unmounts or the target changes.
 
 ## Cancellation linearisation
 

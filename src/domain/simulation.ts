@@ -196,7 +196,7 @@ const freezeProjection = (projection: IntervalProjection): IntervalProjection =>
   activeLoads: Object.freeze([...projection.activeLoads]),
 })
 
-const calculateSimulation = (
+export const calculateSimulation = (
   scenario: ReadonlyScenario,
   plan: PlanPreset,
 ): SimulationResult => {

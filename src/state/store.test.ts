@@ -303,6 +303,140 @@ describe('WattKeep observable store', () => {
     expect(malformedNestedState.getSnapshot().committedPolicy.planId).toBe('essential-reserve')
   })
 
+  it('returns an interval-free proposal summary with canonical evidence and diff', async () => {
+    const store = createStore({ storage: null })
+    const simulation = expectSuccess(await store.agent.simulatePlan('balanced-night'))
+    const proposal = expectSuccess(store.agent.stagePlan(simulation.simulationId))
+    const inspection = expectSuccess(store.agent.inspectHome())
+    const summary = inspection.proposal
+
+    expect(summary).toMatchObject({
+      proposalId: proposal.proposalId,
+      status: 'staged',
+      baseRevision: 1,
+      currentRevision: 1,
+      planId: 'balanced-night',
+      planName: 'Balanced Night',
+      assumptions: proposal.assumptions,
+      beforePolicy: proposal.beforePolicy,
+      afterPolicy: proposal.afterPolicy,
+      diff: proposal.diff,
+    })
+    expect(summary?.simulation).toMatchObject({
+      simulationId: simulation.simulationId,
+      fingerprint: simulation.fingerprint,
+      scenarioId: simulation.scenarioId,
+      revision: simulation.revision,
+      planId: simulation.planId,
+      planName: simulation.planName,
+      endEnergyKWh: simulation.endEnergyKWh,
+      feasible: true,
+      coverage: simulation.coverage,
+    })
+    expect(summary?.simulation).not.toHaveProperty('intervals')
+    expect(summary).not.toHaveProperty('id')
+    expect(summary).not.toHaveProperty('result')
+    expect(summary).not.toHaveProperty('before')
+    expect(summary).not.toHaveProperty('after')
+  })
+
+  it('rejects malformed nested persisted simulation evidence', async () => {
+    const storage = memoryStorage()
+    const first = createStore({ storage })
+    const simulation = expectSuccess(await first.agent.simulatePlan('balanced-night'))
+    const proposal = expectSuccess(first.agent.stagePlan(simulation.simulationId))
+    expect(proposal.simulation.intervals[0]?.activeLoads.length).toBeGreaterThan(0)
+
+    const persisted = JSON.parse(storage.value ?? '{}') as {
+      snapshot: {
+        activeProposal: {
+          simulation: {
+            intervals: Array<{ activeLoads: Array<{ energyKWh: number }> }>
+          }
+        }
+      }
+    }
+    const firstLoad = persisted.snapshot.activeProposal.simulation.intervals[0]?.activeLoads[0]
+    if (firstLoad === undefined) {
+      throw new Error('Expected a persisted active load')
+    }
+    firstLoad.energyKWh += 1
+
+    const recovered = createStore({
+      storage: memoryStorage(JSON.stringify(persisted)),
+    })
+    expect(recovered.getSnapshot().activeProposal).toBeNull()
+    expect(recovered.getSnapshot().persistenceMode).toBe('memory-only')
+    expect(recovered.getSnapshot().persistenceIssue).toBe('corrupt')
+  })
+
+  it('rejects persisted proposal evidence with a mismatched canonical fingerprint', async () => {
+    const storage = memoryStorage()
+    const first = createStore({ storage })
+    const simulation = expectSuccess(await first.agent.simulatePlan('balanced-night'))
+    expectSuccess(first.agent.stagePlan(simulation.simulationId))
+
+    const persisted = JSON.parse(storage.value ?? '{}') as {
+      snapshot: {
+        activeProposal: {
+          simulationFingerprint: string
+          simulation: { endEnergyKWh: number }
+        }
+      }
+    }
+    persisted.snapshot.activeProposal.simulationFingerprint = 'forged'
+    persisted.snapshot.activeProposal.simulation.endEnergyKWh += 1
+
+    const recovered = createStore({
+      storage: memoryStorage(JSON.stringify(persisted)),
+    })
+    expect(recovered.getSnapshot().activeProposal).toBeNull()
+    expect(recovered.getSnapshot().persistenceMode).toBe('memory-only')
+    expect(recovered.getSnapshot().persistenceIssue).toBe('corrupt')
+  })
+
+  it('hydrates a canonical proposal as stale after an alternate forecast refresh', async () => {
+    const storage = memoryStorage()
+    const first = createStore({ storage })
+    const simulation = expectSuccess(await first.agent.simulatePlan('balanced-night'))
+    const proposal = expectSuccess(first.agent.stagePlan(simulation.simulationId))
+    expectSuccess(first.agent.requestReview(proposal.proposalId))
+    expectSuccess(first.human.refreshForecast())
+
+    const reloaded = createStore({ storage })
+    const active = reloaded.getSnapshot().activeProposal
+    expect(reloaded.getSnapshot().forecastKind).toBe('alternate')
+    expect(active?.proposalId).toBe(proposal.proposalId)
+    expect(active?.status).toBe('stale')
+    expect(active?.assumptions.forecastKind).toBe('canonical')
+    expect(active?.simulation.endEnergyKWh).toBe(simulation.endEnergyKWh)
+    expect(Object.isFrozen(active?.simulation)).toBe(true)
+  })
+
+  it('returns STALE_PROPOSAL for a capability invalidated by undo', async () => {
+    const store = createStore({ storage: null })
+    const first = await stageAndReview(store)
+    const firstProposal = first.activeProposal
+    if (firstProposal === null) {
+      throw new Error('Expected the first proposal')
+    }
+    const firstCapability = expectSuccess(
+      store.human.createCommitCapability(firstProposal.proposalId),
+    )
+    expectSuccess(store.human.commit(firstCapability))
+
+    const secondSimulation = expectSuccess(await store.agent.simulatePlan('essential-reserve'))
+    const secondProposal = expectSuccess(store.agent.stagePlan(secondSimulation.simulationId))
+    expectSuccess(store.agent.requestReview(secondProposal.proposalId))
+    const secondCapability = expectSuccess(
+      store.human.createCommitCapability(secondProposal.proposalId),
+    )
+
+    expectSuccess(store.human.undo())
+    expect(store.getSnapshot().activeProposal?.status).toBe('stale')
+    expectFailure(store.human.commit(secondCapability), ERROR_CODES.STALE_PROPOSAL)
+  })
+
   it('returns recoverable outcomes for malformed runtime inputs instead of throwing', async () => {
     const store = createStore({ storage: null })
 
@@ -323,7 +457,7 @@ describe('WattKeep observable store', () => {
     )
   })
 
-  it('keeps a safe in-memory transition when persistence writes or reset clearing fail', async () => {
+  it('keeps a safe in-memory transition when persistence writes fail', async () => {
     const writeFailure: StorageLike = {
       getItem: () => null,
       setItem: () => {
@@ -338,18 +472,33 @@ describe('WattKeep observable store', () => {
     expect(degraded.getSnapshot().persistenceMode).toBe('memory-only')
     expect(degraded.getSnapshot().persistenceIssue).toBe('write-failed')
 
+    let durableValue: string | null = null
     const clearFailure: StorageLike = {
-      getItem: () => null,
-      setItem: () => undefined,
+      getItem: () => durableValue,
+      setItem: (_key, next) => {
+        durableValue = next
+      },
       removeItem: () => {
         throw new Error('clear denied')
       },
     }
-    const reset = createStore({ storage: clearFailure })
+    const durable = createStore({ storage: clearFailure })
+    const durableSimulation = expectSuccess(await durable.agent.simulatePlan('balanced-night'))
+    expectSuccess(durable.agent.stagePlan(durableSimulation.simulationId))
+    const oldEpoch = durable.getSnapshot().sessionEpoch
+
+    const reset = durable
     expectSuccess(reset.human.reset())
-    expect(reset.getSnapshot().sessionEpoch).toBe(2)
+    expect(reset.getSnapshot().sessionEpoch).toBe(oldEpoch + 1)
     expect(reset.getSnapshot().workspaceRevision).toBe(1)
-    expect(reset.getSnapshot().persistenceMode).toBe('memory-only')
-    expect(reset.getSnapshot().persistenceIssue).toBe('clear-failed')
+    expect(reset.getSnapshot().persistenceMode).toBe('persistent')
+    expect(reset.getSnapshot().persistenceIssue).toBeNull()
+    expect(durableValue).toContain('"sessionEpoch":2')
+
+    const reloaded = createStore({ storage: clearFailure })
+    expect(reloaded.getSnapshot().sessionEpoch).toBe(oldEpoch + 1)
+    expect(reloaded.getSnapshot().workspaceRevision).toBe(1)
+    expect(reloaded.getSnapshot().activeProposal).toBeNull()
+    expect(reloaded.getSnapshot().persistenceMode).toBe('persistent')
   })
 })

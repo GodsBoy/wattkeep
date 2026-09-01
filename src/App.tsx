@@ -92,6 +92,8 @@ function App({
   const [interactionError, setInteractionError] = useState<{ readonly code: string; readonly message: string } | null>(null)
   const [explanationError, setExplanationError] = useState<string | null>(null)
   const [liveMessage, setLiveMessage] = useState('WattKeep ready for a local outage plan.')
+  const seenComparisonRecordsRef = useRef<Set<string>>(new Set())
+  const seenExplanationRecordsRef = useRef<Set<string>>(new Set())
   const [resetOpen, setResetOpen] = useState(false)
   const resetCancelRef = useRef<HTMLButtonElement | null>(null)
   const resetDialogRef = useRef<HTMLDivElement | null>(null)
@@ -103,10 +105,11 @@ function App({
   }, [])
 
   useEffect(() => {
+    const lifecycle = new AbortController()
     let disposed = false
     let registration: WebMcpRegistration | undefined
 
-    void registerWebMcpTools(resolvedWebMcpTarget, store).then((result) => {
+    void registerWebMcpTools(resolvedWebMcpTarget, store, lifecycle.signal).then((result) => {
       if (disposed) {
         result.cleanup()
         return
@@ -121,9 +124,59 @@ function App({
 
     return () => {
       disposed = true
+      lifecycle.abort()
       registration?.cleanup()
     }
   }, [resolvedWebMcpTarget, store])
+
+  useEffect(() => {
+    const currentRecords = snapshot.comparisons.filter((entry) => (
+      entry.sessionEpoch === snapshot.sessionEpoch
+      && entry.workspaceRevision === snapshot.workspaceRevision
+    ))
+    const unseenRecords = currentRecords.filter((entry) => {
+      const key = `${entry.sessionEpoch}:${entry.workspaceRevision}:${entry.comparisonId}`
+      return !seenComparisonRecordsRef.current.has(key)
+    })
+    if (unseenRecords.length === 0) return
+
+    unseenRecords.forEach((entry) => {
+      seenComparisonRecordsRef.current.add(
+        `${entry.sessionEpoch}:${entry.workspaceRevision}:${entry.comparisonId}`,
+      )
+    })
+    const latest = unseenRecords[unseenRecords.length - 1]
+    setSelectedPlanIds(latest.comparison.requestedPlanIds)
+  }, [snapshot])
+
+  useEffect(() => {
+    const currentRecords = snapshot.explanations.filter((entry) => (
+      entry.sessionEpoch === snapshot.sessionEpoch
+      && entry.workspaceRevision === snapshot.workspaceRevision
+    ))
+    const unseenRecords = currentRecords.filter((entry) => {
+      const key = `${entry.sessionEpoch}:${entry.workspaceRevision}:${entry.explanationId}`
+      return !seenExplanationRecordsRef.current.has(key)
+    })
+    if (unseenRecords.length === 0) return
+
+    unseenRecords.forEach((entry) => {
+      seenExplanationRecordsRef.current.add(
+        `${entry.sessionEpoch}:${entry.workspaceRevision}:${entry.explanationId}`,
+      )
+    })
+    const latest = unseenRecords[unseenRecords.length - 1]
+    const simulationEntry = snapshot.simulations.find((entry) => (
+      entry.simulationId === latest.simulationId
+      && entry.sessionEpoch === snapshot.sessionEpoch
+      && entry.workspaceRevision === snapshot.workspaceRevision
+    ))
+    if (simulationEntry === undefined) return
+
+    setCandidatePlanId(simulationEntry.result.planId)
+    setSelectedInterval(latest.intervalIndex)
+    setExplanationError(null)
+  }, [snapshot])
 
   useEffect(() => {
     if (!resetOpen) return

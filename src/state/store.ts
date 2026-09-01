@@ -1,5 +1,6 @@
 import {
   comparePlans as calculateComparison,
+  calculateSimulation as calculateCanonicalSimulation,
   explainInterval as calculateExplanation,
   simulatePlan as calculateSimulation,
   type IntervalExplanation,
@@ -182,6 +183,12 @@ export interface ProposalSummary {
   readonly baseRevision: number
   readonly currentRevision: number
   readonly planId: PlanId
+  readonly planName: string
+  readonly assumptions: ProposalAssumptions
+  readonly simulation: Omit<SimulationResult, 'intervals'>
+  readonly beforePolicy: LoadPolicy
+  readonly afterPolicy: LoadPolicy
+  readonly diff: LoadPolicyDiff
 }
 
 export interface HomeLoad extends LoadDefinition {
@@ -451,6 +458,41 @@ const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
 )
 
+const deepEqual = (left: unknown, right: unknown): boolean => {
+  if (Object.is(left, right)) {
+    return true
+  }
+
+  if (typeof left !== 'object' || left === null
+    || typeof right !== 'object' || right === null) {
+    return false
+  }
+
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right)
+      || left.length !== right.length) {
+      return false
+    }
+
+    return left.every((item, index) => deepEqual(item, right[index]))
+  }
+
+  if (!isRecord(left) || !isRecord(right)) {
+    return false
+  }
+
+  const leftKeys = Object.keys(left)
+  const rightKeys = Object.keys(right)
+  if (leftKeys.length !== rightKeys.length) {
+    return false
+  }
+
+  return leftKeys.every((key) => (
+    Object.prototype.hasOwnProperty.call(right, key)
+    && deepEqual(left[key], right[key])
+  ))
+}
+
 const isFiniteNumber = (value: unknown): value is number => (
   typeof value === 'number' && Number.isFinite(value)
 )
@@ -551,13 +593,30 @@ const buildDiff = (
 
 const proposalSummary = (
   proposal: Proposal | null,
-): ProposalSummary | null => proposal === null ? null : freezeDeep({
-  proposalId: proposal.proposalId,
-  status: proposal.status,
-  baseRevision: proposal.baseRevision,
-  currentRevision: proposal.currentRevision,
-  planId: proposal.planId,
-})
+): ProposalSummary | null => {
+  if (proposal === null) {
+    return null
+  }
+
+  const {
+    intervals: _intervals,
+    ...simulation
+  } = proposal.simulation
+
+  return freezeDeep({
+    proposalId: proposal.proposalId,
+    status: proposal.status,
+    baseRevision: proposal.baseRevision,
+    currentRevision: proposal.currentRevision,
+    planId: proposal.planId,
+    planName: proposal.planName,
+    assumptions: proposal.assumptions,
+    simulation,
+    beforePolicy: proposal.beforePolicy,
+    afterPolicy: proposal.afterPolicy,
+    diff: proposal.diff,
+  })
+}
 
 const buildSnapshot = (seed: {
   readonly sessionEpoch: number
@@ -731,7 +790,11 @@ const isValidArchivedSessions = (
 
 const normaliseProposal = (
   value: unknown,
-  scenario: ReadonlyScenario,
+  currentScenario: ReadonlyScenario,
+  canonicalScenario: ReadonlyScenario,
+  alternateScenario: ReadonlyScenario,
+  currentForecastKind: ForecastKind,
+  workspaceRevision: number,
 ): Proposal | null => {
   if (!isRecord(value)
     || typeof value.proposalId !== 'string'
@@ -740,89 +803,156 @@ const normaliseProposal = (
     || typeof value.baseRevision !== 'number'
     || !Number.isInteger(value.baseRevision)
     || value.baseRevision < 1
+    || typeof value.currentRevision !== 'number'
+    || !Number.isInteger(value.currentRevision)
+    || value.currentRevision < 1
     || !isRecord(value.simulation)
-    || typeof value.simulation.simulationId !== 'string'
-    || typeof value.simulation.fingerprint !== 'string'
     || typeof value.simulation.planId !== 'string'
-    || typeof value.simulation.scenarioId !== 'string'
-    || typeof value.simulation.planName !== 'string'
-    || !Array.isArray(value.simulation.intervals)
     || !isRecord(value.assumptions)
     || !isBatteryValue(value.assumptions.battery)
     || !isOutageValue(value.assumptions.outage)
-    || !Array.isArray(value.assumptions.solarKWh)) {
+    || !Array.isArray(value.assumptions.solarKWh)
+    || !value.assumptions.solarKWh.every((solar) => isFiniteNumber(solar))
+    || typeof value.simulationId !== 'string'
+    || typeof value.simulationFingerprint !== 'string'
+    || typeof value.scenarioId !== 'string'
+    || typeof value.planId !== 'string'
+    || typeof value.planName !== 'string') {
     return null
   }
 
   const baseRevision = value.baseRevision
-  const result = value.simulation as unknown as SimulationResult
-  if (getPlan(scenario, result.planId) === undefined) {
+  const status = value.status
+  const currentRevision = value.currentRevision
+  if (currentRevision !== workspaceRevision
+    || (status === 'stale'
+      ? baseRevision >= workspaceRevision
+      : baseRevision !== workspaceRevision)
+    || (status !== 'stale' && currentForecastKind !== value.assumptions.forecastKind)) {
     return null
   }
-  const beforePolicy = normalisePolicy(value.beforePolicy ?? value.before, scenario)
-  const afterPolicy = normalisePolicy(value.afterPolicy ?? value.after, scenario)
-  if (beforePolicy === null || afterPolicy === null) {
+
+  const forecastKindValue = value.assumptions.forecastKind
+  if (forecastKindValue !== 'canonical' && forecastKindValue !== 'alternate') {
+    return null
+  }
+  const forecastKind: ForecastKind = forecastKindValue
+  if (status === 'stale'
+    && forecastKind !== currentForecastKind
+    && !(currentForecastKind === 'alternate' && forecastKind === 'canonical')) {
+    return null
+  }
+
+  const proposalScenario = forecastKind === 'alternate'
+    ? alternateScenario
+    : canonicalScenario
+  const expectedAssumptions = {
+    scenarioId: proposalScenario.id,
+    scenarioRevision: proposalScenario.revision,
+    workspaceRevision: baseRevision,
+    forecastKind,
+    battery: proposalScenario.battery,
+    outage: proposalScenario.outage,
+    solarKWh: Object.freeze([...proposalScenario.solarKWh]),
+    reserveKWh: proposalScenario.battery.reserveKWh,
+  }
+  if (!deepEqual(value.assumptions, expectedAssumptions)) {
+    return null
+  }
+
+  const simulationValue = value.simulation
+  if (!isRecord(simulationValue) || typeof simulationValue.planId !== 'string') {
+    return null
+  }
+  const plan = getPlan(proposalScenario, simulationValue.planId)
+  if (plan === undefined) {
+    return null
+  }
+
+  let canonicalSimulation: SimulationResult
+  try {
+    canonicalSimulation = calculateCanonicalSimulation(proposalScenario, plan)
+  } catch {
+    return null
+  }
+  if (!deepEqual(simulationValue, canonicalSimulation)
+    || (value.result !== undefined && !deepEqual(value.result, canonicalSimulation))) {
+    return null
+  }
+  if (value.id !== undefined && value.id !== value.proposalId) {
+    return null
+  }
+  if (value.fingerprint !== undefined
+    && value.fingerprint !== canonicalSimulation.fingerprint) {
+    return null
+  }
+  if (value.simulationId !== canonicalSimulation.simulationId
+    || value.simulationFingerprint !== canonicalSimulation.fingerprint
+    || value.scenarioId !== canonicalSimulation.scenarioId
+    || value.planId !== canonicalSimulation.planId
+    || value.planName !== canonicalSimulation.planName) {
+    return null
+  }
+
+  const beforeValue = value.beforePolicy
+  const beforeAlias = value.before
+  const afterValue = value.afterPolicy
+  const afterAlias = value.after
+  if ((beforeValue !== undefined && beforeAlias !== undefined
+    && !deepEqual(beforeValue, beforeAlias))
+    || (afterValue !== undefined && afterAlias !== undefined
+      && !deepEqual(afterValue, afterAlias))) {
+    return null
+  }
+  const rawBeforePolicy = beforeValue ?? beforeAlias
+  const rawAfterPolicy = afterValue ?? afterAlias
+  const beforePolicy = normalisePolicy(rawBeforePolicy, currentScenario)
+  const afterPolicy = normalisePolicy(rawAfterPolicy, currentScenario)
+  if (beforePolicy === null || afterPolicy === null
+    || !deepEqual(rawBeforePolicy, beforePolicy)
+    || !deepEqual(rawAfterPolicy, afterPolicy)
+    || afterPolicy.planId !== canonicalSimulation.planId) {
     return null
   }
 
   const assumptionsRecord = value.assumptions
-  const battery = assumptionsRecord.battery
-  const outage = assumptionsRecord.outage
-  if (!isBatteryValue(battery) || !isOutageValue(outage)) {
-    return null
-  }
-  const forecastKindValue = assumptionsRecord.forecastKind
-  const forecastKind: ForecastKind = forecastKindValue === 'alternate'
-    ? 'alternate'
-    : 'canonical'
-  if (forecastKindValue !== 'canonical' && forecastKindValue !== 'alternate') {
-    return null
-  }
+  const battery = assumptionsRecord.battery as Battery
+  const outage = assumptionsRecord.outage as Outage
   const solarValues = assumptionsRecord.solarKWh as unknown as readonly unknown[]
-  if (!solarValues.every((solar) => isFiniteNumber(solar))) {
-    return null
-  }
 
   const assumptions = freezeDeep({
-    scenarioId: typeof assumptionsRecord.scenarioId === 'string'
-      ? assumptionsRecord.scenarioId
-      : result.scenarioId,
-    scenarioRevision: typeof assumptionsRecord.scenarioRevision === 'number'
-      ? assumptionsRecord.scenarioRevision
-      : scenario.revision,
-    workspaceRevision: typeof assumptionsRecord.workspaceRevision === 'number'
-      ? assumptionsRecord.workspaceRevision
-      : baseRevision,
+    scenarioId: assumptionsRecord.scenarioId as string,
+    scenarioRevision: assumptionsRecord.scenarioRevision as number,
+    workspaceRevision: assumptionsRecord.workspaceRevision as number,
     forecastKind,
     battery,
     outage,
     solarKWh: Object.freeze(solarValues.map((solar) => (
-      typeof solar === 'number' ? solar : Number.NaN
+      solar as number
     ))),
-    reserveKWh: typeof assumptionsRecord.reserveKWh === 'number'
-      ? assumptionsRecord.reserveKWh
-      : result.reserveKWh,
+    reserveKWh: assumptionsRecord.reserveKWh as number,
   })
 
   const diff = buildDiff(beforePolicy, afterPolicy)
+  if (value.diff !== undefined && !deepEqual(value.diff, diff)) {
+    return null
+  }
   const proposalId = value.proposalId
   return freezeDeep({
     proposalId,
     id: proposalId,
-    status: value.status,
+    status,
     baseRevision,
-    currentRevision: typeof value.currentRevision === 'number'
-      ? value.currentRevision
-      : baseRevision,
-    simulationId: result.simulationId,
-    simulationFingerprint: result.fingerprint,
-    fingerprint: result.fingerprint,
-    scenarioId: result.scenarioId,
-    planId: result.planId,
-    planName: result.planName,
+    currentRevision,
+    simulationId: canonicalSimulation.simulationId,
+    simulationFingerprint: canonicalSimulation.fingerprint,
+    fingerprint: canonicalSimulation.fingerprint,
+    scenarioId: canonicalSimulation.scenarioId,
+    planId: canonicalSimulation.planId,
+    planName: canonicalSimulation.planName,
     assumptions,
-    simulation: result,
-    result,
+    simulation: canonicalSimulation,
+    result: canonicalSimulation,
     beforePolicy,
     afterPolicy,
     before: beforePolicy,
@@ -867,7 +997,9 @@ const normaliseCommit = (
 
 const hydratePersisted = (
   persisted: PersistedStoreState,
-  scenario: ReadonlyScenario,
+  currentScenario: ReadonlyScenario,
+  canonicalScenario: ReadonlyScenario,
+  alternateScenario: ReadonlyScenario,
 ): {
   readonly sessionEpoch: number
   readonly workspaceRevision: number
@@ -889,14 +1021,21 @@ const hydratePersisted = (
     return null
   }
 
-  const committedPolicy = normalisePolicy(persisted.committedPolicy, scenario)
+  const committedPolicy = normalisePolicy(persisted.committedPolicy, currentScenario)
   if (committedPolicy === null) {
     return null
   }
 
   const activeProposal = persisted.activeProposal === null
     ? null
-    : normaliseProposal(persisted.activeProposal, scenario)
+    : normaliseProposal(
+      persisted.activeProposal,
+      currentScenario,
+      canonicalScenario,
+      alternateScenario,
+      persisted.forecastKind,
+      persisted.workspaceRevision,
+    )
   if (persisted.activeProposal !== null && activeProposal === null) {
     return null
   }
@@ -915,6 +1054,7 @@ const hydratePersisted = (
       || activeProposal.simulationId !== activeProposal.simulation.simulationId
       || activeProposal.simulationFingerprint !== activeProposal.simulation.fingerprint
       || !activeProposal.simulation.feasible
+      || !deepEqual(activeProposal.beforePolicy, committedPolicy)
       || !revisionStateIsValid) {
       return null
     }
@@ -922,7 +1062,7 @@ const hydratePersisted = (
 
   const lastCommit = persisted.lastCommit === null
     ? null
-    : normaliseCommit(persisted.lastCommit, scenario)
+    : normaliseCommit(persisted.lastCommit, currentScenario)
   if (persisted.lastCommit !== null && lastCommit === null) {
     return null
   }
@@ -960,6 +1100,8 @@ export const createStore = (options: StoreOptions = {}): WattKeepStore => {
     : hydratePersisted(
       read.state,
       read.state.forecastKind === 'alternate' ? alternateScenario : canonicalScenario,
+      canonicalScenario,
+      alternateScenario,
     )
   const hydratedSuccessfully = read.state === null || hydrated !== null
   const initialMode: PersistenceMode = !hydratedSuccessfully || read.issue !== null
@@ -2085,7 +2227,7 @@ export const createStore = (options: StoreOptions = {}): WattKeepStore => {
       afterPolicy,
       staleProposalId: invalidatedProposal?.proposalId,
     }, nextRevision)
-    invalidateCapabilities('other-mutation')
+    invalidateCapabilities('revision-conflict')
     publish(nextSnapshot({
       workspaceRevision: nextRevision,
       committedPolicy: afterPolicy,
@@ -2141,7 +2283,9 @@ export const createStore = (options: StoreOptions = {}): WattKeepStore => {
     })
 
     const cleared = clearPersistedState(storage, storageKey)
-    const resetCanPersist = cleared.ok && storage !== null
+    // Clearing is best effort. Some adapters reject removeItem but still allow
+    // setItem, so publish the reset snapshot to overwrite the old durable state.
+    const resetCanPersist = storage !== null
     invalidateCapabilities('other-mutation')
     publish(buildSnapshot({
       sessionEpoch,

@@ -20,6 +20,7 @@ import {
 
 const CANCELLED_MESSAGE = 'The operation was cancelled before it completed.'
 const INTERNAL_ERROR_MESSAGE = 'The operation could not be completed safely.'
+const REGISTRATION_CANCELLED_REASON = 'WebMCP registration was cancelled; use the manual interface.'
 const DEFAULT_PERSISTENCE_MODE = 'memory-only' as const
 
 const FORBIDDEN_ACTION_WORDS = /\b(?:approve|commit|refresh|reset|undo)\b/i
@@ -106,30 +107,151 @@ const compactJson = (value: unknown, depth = 0): CompactJson => {
   return Object.freeze(result)
 }
 
-const compactProposal = (value: unknown): CompactJson => {
-  const proposal = compactJson(value)
-  if (!isRecord(proposal)) {
-    return proposal
+const readField = (value: unknown, key: string): unknown => {
+  if (!isRecord(value)) {
+    return undefined
   }
 
+  try {
+    return value[key]
+  } catch {
+    return undefined
+  }
+}
+
+const compactFields = (
+  fields: readonly (readonly [string, unknown])[],
+): CompactJson => compactJson(Object.fromEntries(fields))
+
+const compactStringArray = (value: unknown): CompactJson => (
+  Array.isArray(value)
+    ? value
+      .filter((item): item is string => typeof item === 'string')
+      .slice(0, 64)
+      .map((item) => item.slice(0, 256))
+    : []
+)
+
+const compactNumberArray = (value: unknown): CompactJson => (
+  Array.isArray(value)
+    ? value
+      .slice(0, 64)
+      .map((item) => typeof item === 'number' && Number.isFinite(item) ? item : null)
+    : []
+)
+
+const compactBattery = (value: unknown): CompactJson => compactFields([
+  ['capacityKWh', readField(value, 'capacityKWh')],
+  ['startEnergyKWh', readField(value, 'startEnergyKWh')],
+  ['reserveKWh', readField(value, 'reserveKWh')],
+])
+
+const compactOutage = (value: unknown): CompactJson => compactFields([
+  ['start', readField(value, 'start')],
+  ['end', readField(value, 'end')],
+  ['intervalHours', readField(value, 'intervalHours')],
+  ['intervalCount', readField(value, 'intervalCount')],
+])
+
+const compactAssumptions = (value: unknown): CompactJson => compactFields([
+  ['scenarioRevision', readField(value, 'scenarioRevision')],
+  ['workspaceRevision', readField(value, 'workspaceRevision')],
+  ['forecastKind', readField(value, 'forecastKind')],
+  ['battery', compactBattery(readField(value, 'battery'))],
+  ['outage', compactOutage(readField(value, 'outage'))],
+  ['solarKWh', compactNumberArray(readField(value, 'solarKWh'))],
+  ['reserveKWh', readField(value, 'reserveKWh')],
+])
+
+const compactSimulationSummary = (value: unknown): CompactJson => compactFields([
+  ['endEnergyKWh', readField(value, 'endEnergyKWh')],
+  ['endChargePercent', readField(value, 'endChargePercent')],
+  ['feasible', readField(value, 'feasible')],
+  ['firstBreachIndex', readField(value, 'firstBreachIndex')],
+  ['coverage', readField(value, 'coverage')],
+])
+
+const compactPolicy = (value: unknown): CompactJson => compactFields([
+  ['planId', readField(value, 'planId')],
+  ['planName', readField(value, 'planName')],
+  ['loadIds', compactStringArray(readField(value, 'loadIds'))],
+])
+
+const compactDiff = (value: unknown): CompactJson => compactFields([
+  ['addedLoadIds', compactStringArray(readField(value, 'addedLoadIds'))],
+  ['removedLoadIds', compactStringArray(readField(value, 'removedLoadIds'))],
+  ['unchangedLoadIds', compactStringArray(readField(value, 'unchangedLoadIds'))],
+  ['changed', readField(value, 'changed')],
+])
+
+const compactProposal = (
+  value: unknown,
+  wrapper?: unknown,
+): CompactJson => {
+  if (!isRecord(value)) {
+    return null
+  }
+
+  const proposal = value
+  const field = (key: string): unknown => {
+    const wrapped = readField(wrapper, key)
+    return wrapped === undefined ? readField(proposal, key) : wrapped
+  }
+  const simulation = readField(proposal, 'simulation') ?? readField(proposal, 'result')
+  const beforePolicy = readField(proposal, 'beforePolicy') ?? readField(proposal, 'before')
+  const afterPolicy = readField(proposal, 'afterPolicy') ?? readField(proposal, 'after')
+  const simulationFingerprint = field('simulationFingerprint') ?? field('fingerprint')
+
   // Proposal and StoreSnapshot intentionally retain compatibility aliases for
-  // the UI. The agent surface returns one canonical copy of each large value.
-  return compactJson({
-    proposalId: proposal.proposalId,
-    status: proposal.status,
-    baseRevision: proposal.baseRevision,
-    currentRevision: proposal.currentRevision,
-    simulationId: proposal.simulationId,
-    simulationFingerprint: proposal.simulationFingerprint,
-    scenarioId: proposal.scenarioId,
-    planId: proposal.planId,
-    planName: proposal.planName,
-    assumptions: proposal.assumptions,
-    simulation: proposal.simulation,
-    beforePolicy: proposal.beforePolicy,
-    afterPolicy: proposal.afterPolicy,
-    diff: proposal.diff,
-  })
+  // the UI. The agent surface returns one canonical copy of each large value,
+  // with interval evidence available through simulate_plan and explain_interval.
+  return compactFields([
+    ['proposalId', field('proposalId')],
+    ['status', field('status')],
+    ['baseRevision', field('baseRevision')],
+    ['currentRevision', field('currentRevision')],
+    ['simulationId', field('simulationId') ?? readField(simulation, 'simulationId')],
+    ['simulationFingerprint', simulationFingerprint ?? readField(simulation, 'fingerprint')],
+    ['scenarioId', field('scenarioId') ?? readField(simulation, 'scenarioId')],
+    ['planId', field('planId') ?? readField(simulation, 'planId')],
+    ['planName', field('planName') ?? readField(simulation, 'planName')],
+    ['assumptions', compactAssumptions(readField(proposal, 'assumptions'))],
+    ['simulation', compactSimulationSummary(simulation)],
+    ['beforePolicy', compactPolicy(beforePolicy)],
+    ['afterPolicy', compactPolicy(afterPolicy)],
+    ['diff', compactDiff(readField(proposal, 'diff'))],
+  ])
+}
+
+const compactRankedPlan = (value: unknown): CompactJson => {
+  if (!isRecord(value)) {
+    return null
+  }
+
+  const simulation = readField(value, 'simulation')
+  return compactFields([
+    ['rank', readField(value, 'rank')],
+    ['planId', readField(value, 'planId') ?? readField(simulation, 'planId')],
+    ['planName', readField(value, 'planName') ?? readField(simulation, 'planName')],
+    ['simulationId', readField(simulation, 'simulationId')],
+    ['fingerprint', readField(simulation, 'fingerprint')],
+    ['feasible', readField(simulation, 'feasible')],
+    ['coverage', readField(simulation, 'coverage')],
+    ['endEnergyKWh', readField(simulation, 'endEnergyKWh')],
+    ['endChargePercent', readField(simulation, 'endChargePercent')],
+    ['firstBreachIndex', readField(simulation, 'firstBreachIndex')],
+    ['tradeOffReason', readField(value, 'tradeOffReason')],
+  ])
+}
+
+const compactComparison = (value: unknown): CompactJson => {
+  const ranked = readField(value, 'ranked')
+  return compactFields([
+    ['requestedPlanIds', compactStringArray(readField(value, 'requestedPlanIds'))],
+    ['ranked', Array.isArray(ranked)
+      ? ranked.slice(0, 3).map((item) => compactRankedPlan(item))
+      : []],
+  ])
 }
 
 const compactData = (tool: ToolName, value: unknown): CompactJson => {
@@ -137,12 +259,11 @@ const compactData = (tool: ToolName, value: unknown): CompactJson => {
     return compactProposal(value)
   }
   if (tool === 'request_review' && isRecord(value)) {
-    return compactJson({
-      proposal: compactProposal(value.proposal),
-      proposalId: value.proposalId,
-      baseRevision: value.baseRevision,
-      currentRevision: value.currentRevision,
-    })
+    const proposal = readField(value, 'proposal')
+    return compactProposal(proposal, value)
+  }
+  if (tool === 'compare_plans') {
+    return compactComparison(value)
   }
   return compactJson(value)
 }
@@ -450,6 +571,9 @@ const resolveModelContext = (
 }
 
 const registrationFailureReason = (error: unknown): string => {
+  if (isRecord(error) && error.name === 'AbortError') {
+    return REGISTRATION_CANCELLED_REASON
+  }
   if (isRecord(error)
     && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
     return 'WebMCP registration was not permitted; use the manual interface.'
@@ -460,11 +584,13 @@ const registrationFailureReason = (error: unknown): string => {
 /**
  * Registers the page-scoped agent surface when WebMCP is available. The
  * returned lifecycle cleanup aborts the registration signal, which is the
- * WebMCP unregister mechanism.
+ * WebMCP unregister mechanism. An optional caller signal is bound to the
+ * same lifecycle so pending registration can be cancelled by its owner.
  */
 export const registerWebMcpTools = async (
   target: Document | ModelContext | null | undefined,
   source: ToolSource,
+  callerSignal?: AbortSignal,
 ): Promise<WebMcpRegistration> => {
   const context = resolveModelContext(target)
   if (context === null) {
@@ -480,12 +606,59 @@ export const registerWebMcpTools = async (
 
   const tools = createWebMcpTools(source)
   let cleaned = false
+  let callerListenerAttached = false
+  const onCallerAbort = (): void => {
+    cleanup()
+  }
+  const detachCallerSignal = (): void => {
+    if (!callerListenerAttached || callerSignal === undefined) {
+      return
+    }
+    callerListenerAttached = false
+    try {
+      callerSignal.removeEventListener('abort', onCallerAbort)
+    } catch {
+      // A native AbortSignal does not throw here. Cleanup must still abort the
+      // registration lifecycle if a host supplies an unusual signal object.
+    }
+  }
   const cleanup = (): void => {
     if (cleaned) {
       return
     }
     cleaned = true
+    detachCallerSignal()
     lifecycle.abort()
+  }
+
+  if (callerSignal !== undefined) {
+    if (callerSignal.aborted) {
+      cleanup()
+      return {
+        ...manualRegistration(REGISTRATION_CANCELLED_REASON),
+        cleanup,
+      }
+    }
+
+    callerListenerAttached = true
+    try {
+      callerSignal.addEventListener('abort', onCallerAbort, { once: true })
+    } catch {
+      cleanup()
+      return {
+        ...manualRegistration('WebMCP could not bind its registration lifecycle; use the manual interface.'),
+        cleanup,
+      }
+    }
+    // Abort can race with listener attachment in host implementations that
+    // provide an AbortSignal-like object rather than the native signal.
+    if (callerSignal.aborted) {
+      cleanup()
+      return {
+        ...manualRegistration(REGISTRATION_CANCELLED_REASON),
+        cleanup,
+      }
+    }
   }
 
   try {
@@ -496,9 +669,12 @@ export const registerWebMcpTools = async (
       }
     }
   } catch (error) {
+    const reason = lifecycle.signal.aborted
+      ? REGISTRATION_CANCELLED_REASON
+      : registrationFailureReason(error)
     cleanup()
     return {
-      ...manualRegistration(registrationFailureReason(error)),
+      ...manualRegistration(reason),
       cleanup,
     }
   }

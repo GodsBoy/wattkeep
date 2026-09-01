@@ -43,6 +43,51 @@ class FakeModelContext implements ModelContext {
   }
 }
 
+class DelayedDuplicateModelContext extends FakeModelContext {
+  delayAt: number | null = 3
+  private releasePending: (() => void) | undefined
+  private resolvePending: (() => void) | undefined
+  readonly pending = new Promise<void>((resolve) => {
+    this.resolvePending = resolve
+  })
+
+  registerTool = async (
+    tool: ModelContextTool,
+    options: { readonly signal: AbortSignal },
+  ): Promise<undefined> => {
+    if (this.delayAt !== null && this.calls.length === this.delayAt) {
+      this.resolvePending?.()
+      await new Promise<void>((resolve) => {
+        this.releasePending = resolve
+      })
+    }
+
+    if (options.signal.aborted) {
+      const error = new Error('registration cancelled')
+      error.name = 'AbortError'
+      throw error
+    }
+    if (this.tools.has(tool.name)) {
+      const error = new Error('duplicate tool')
+      error.name = 'DuplicateToolError'
+      throw error
+    }
+
+    const registered = { ...tool, registrationSignal: options.signal } as RegisteredTool
+    this.calls.push(registered)
+    this.tools.set(tool.name, registered)
+    options.signal.addEventListener('abort', () => {
+      this.tools.delete(tool.name)
+    }, { once: true })
+    return undefined
+  }
+
+  release = (): void => {
+    this.releasePending?.()
+    this.releasePending = undefined
+  }
+}
+
 const documentFor = (context: ModelContext): Document => ({
   modelContext: context,
 } as unknown as Document)
@@ -96,6 +141,56 @@ describe('WebMCP registration', () => {
     expect(context.calls).toHaveLength(3)
     expect(context.tools.size).toBe(0)
     expect(context.calls.every((tool) => tool.registrationSignal.aborted)).toBe(true)
+  })
+
+  it('uses an external abort to clean partial registration before a clean retry', async () => {
+    const context = new DelayedDuplicateModelContext()
+    const controller = new AbortController()
+    const pending = registerWebMcpTools(
+      documentFor(context),
+      createStore({ storage: null }),
+      controller.signal,
+    )
+
+    await context.pending
+    expect(context.calls).toHaveLength(3)
+    expect(context.tools.size).toBe(3)
+
+    controller.abort()
+    expect(context.tools.size).toBe(0)
+    context.release()
+
+    const cancelled = await pending
+    expect(cancelled.mode).toBe('manual')
+    expect(cancelled.reason).toContain('cancelled')
+    expect(context.tools.size).toBe(0)
+
+    context.delayAt = null
+    const retry = await registerWebMcpTools(
+      documentFor(context),
+      createStore({ storage: null }),
+    )
+    expect(retry.mode).toBe('webmcp')
+    expect([...context.tools.keys()]).toEqual(TOOL_NAMES)
+    retry.cleanup()
+  })
+
+  it('does not start registration for a pre-aborted caller lifecycle', async () => {
+    const context = new FakeModelContext()
+    const controller = new AbortController()
+    controller.abort()
+
+    const registration = await registerWebMcpTools(
+      documentFor(context),
+      createStore({ storage: null }),
+      controller.signal,
+    )
+
+    expect(registration.mode).toBe('manual')
+    expect(registration.reason).toContain('cancelled')
+    expect(context.calls).toHaveLength(0)
+    expect(context.tools.size).toBe(0)
+    registration.cleanup()
   })
 
   it('cleans up one lifecycle idempotently and permits strict-mode re-registration', async () => {

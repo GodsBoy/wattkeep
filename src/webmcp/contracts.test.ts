@@ -5,6 +5,7 @@ import {
   TOOL_CONTRACTS,
   TOOL_NAMES,
   TOOL_SCHEMAS,
+  type ToolEnvelope,
   validateToolInput,
 } from './contracts'
 import { createStore } from '../state/store'
@@ -15,7 +16,13 @@ const expectFailure = (value: unknown, code: string): void => {
   expect(value).toMatchObject({ ok: false, error: { code } })
 }
 
-type RegisteredTool = ModelContextTool & { readonly registrationSignal: AbortSignal }
+type RegisteredTool = Omit<ModelContextTool, 'execute'> & {
+  readonly execute: (
+    input: unknown,
+    context: { readonly signal: AbortSignal },
+  ) => Promise<ToolEnvelope>
+  readonly registrationSignal: AbortSignal
+}
 
 class FakeModelContext implements ModelContext {
   readonly tools = new Map<string, RegisteredTool>()
@@ -25,7 +32,7 @@ class FakeModelContext implements ModelContext {
     tool: ModelContextTool,
     options: { readonly signal: AbortSignal },
   ): Promise<undefined> => {
-    const registered = { ...tool, registrationSignal: options.signal }
+    const registered = { ...tool, registrationSignal: options.signal } as RegisteredTool
     this.calls.push(registered)
     this.tools.set(tool.name, registered)
     options.signal.addEventListener('abort', () => {
@@ -197,7 +204,243 @@ describe('WebMCP contracts', () => {
       planId: 'balanced-night',
     }, { signal: new AbortController().signal })
     expect(simulation).toMatchObject({ ok: true, tool: 'simulate_plan' })
-    expect(JSON.stringify(simulation).length).toBeLessThan(50_000)
+    const simulationJson = JSON.stringify(simulation)
+    expect(simulationJson).toContain('"intervals"')
+    expect(simulationJson.length).toBeGreaterThan(1_500)
+
+    const comparison = await toolFor(context, 'compare_plans').execute({
+      planIds: ['essential-reserve', 'balanced-night', 'comfort-carry'],
+    }, { signal: new AbortController().signal })
+    if (!comparison.ok || typeof comparison.data !== 'object' || comparison.data === null) {
+      throw new Error('Expected a compact comparison result')
+    }
+    const comparisonData = comparison.data as Record<string, unknown>
+    const rankedValue = comparisonData.ranked
+    if (!Array.isArray(rankedValue)
+      || rankedValue.some((entry) => typeof entry !== 'object' || entry === null)) {
+      throw new Error('Expected ranked comparison summaries')
+    }
+    const ranked = rankedValue as Record<string, unknown>[]
+    expect(Object.keys(comparisonData)).toEqual(['requestedPlanIds', 'ranked'])
+    expect(ranked).toHaveLength(3)
+    for (const entry of ranked) {
+      expect(Object.keys(entry)).toEqual([
+        'rank',
+        'planId',
+        'planName',
+        'simulationId',
+        'fingerprint',
+        'feasible',
+        'coverage',
+        'endEnergyKWh',
+        'endChargePercent',
+        'firstBreachIndex',
+        'tradeOffReason',
+      ])
+      expect(entry).not.toHaveProperty('intervals')
+    }
+    const expectedComparisonData = {
+      requestedPlanIds: ['essential-reserve', 'balanced-night', 'comfort-carry'],
+      ranked: ranked.map((entry) => ({
+        rank: entry.rank,
+        planId: entry.planId,
+        planName: entry.planName,
+        simulationId: entry.simulationId,
+        fingerprint: entry.fingerprint,
+        feasible: entry.feasible,
+        coverage: entry.coverage,
+        endEnergyKWh: entry.endEnergyKWh,
+        endChargePercent: entry.endChargePercent,
+        firstBreachIndex: entry.firstBreachIndex,
+        tradeOffReason: entry.tradeOffReason,
+      })),
+    }
+    expect(comparisonData).toEqual(expectedComparisonData)
+    const expectedComparison = {
+      ok: true,
+      tool: 'compare_plans',
+      data: expectedComparisonData,
+      state: {
+        sessionEpoch: 1,
+        workspaceRevision: 1,
+        activeProposal: null,
+        persistenceMode: 'memory-only',
+        nextActions: ['Choose a feasible plan to stage.'],
+      },
+    }
+    expect(JSON.stringify(comparison)).toBe(JSON.stringify(expectedComparison))
+    expect(JSON.stringify(comparison).length).toBeLessThan(1_500)
+
+    if (!simulation.ok || typeof simulation.data !== 'object' || simulation.data === null
+      || !('simulationId' in simulation.data) || typeof simulation.data.simulationId !== 'string') {
+      throw new Error('Expected a simulation result')
+    }
+    const staged = await toolFor(context, 'stage_plan').execute({
+      simulationId: simulation.data.simulationId,
+    }, { signal: new AbortController().signal })
+    if (!staged.ok || typeof staged.data !== 'object' || staged.data === null
+      || !('proposalId' in staged.data) || typeof staged.data.proposalId !== 'string') {
+      throw new Error('Expected a staged proposal')
+    }
+    const stagedData = staged.data as Record<string, unknown>
+    const stagedAssumptions = stagedData.assumptions as Record<string, unknown>
+    const stagedBattery = stagedAssumptions.battery as Record<string, unknown>
+    const stagedOutage = stagedAssumptions.outage as Record<string, unknown>
+    const stagedSimulation = stagedData.simulation as Record<string, unknown>
+    const stagedBeforePolicy = stagedData.beforePolicy as Record<string, unknown>
+    const stagedAfterPolicy = stagedData.afterPolicy as Record<string, unknown>
+    const stagedDiff = stagedData.diff as Record<string, unknown>
+    expect(Object.keys(stagedData)).toEqual([
+      'proposalId',
+      'status',
+      'baseRevision',
+      'currentRevision',
+      'simulationId',
+      'simulationFingerprint',
+      'scenarioId',
+      'planId',
+      'planName',
+      'assumptions',
+      'simulation',
+      'beforePolicy',
+      'afterPolicy',
+      'diff',
+    ])
+    expect(Object.keys(stagedAssumptions)).toEqual([
+      'scenarioRevision',
+      'workspaceRevision',
+      'forecastKind',
+      'battery',
+      'outage',
+      'solarKWh',
+      'reserveKWh',
+    ])
+    expect(Object.keys(stagedBattery)).toEqual([
+      'capacityKWh',
+      'startEnergyKWh',
+      'reserveKWh',
+    ])
+    expect(Object.keys(stagedOutage)).toEqual([
+      'start',
+      'end',
+      'intervalHours',
+      'intervalCount',
+    ])
+    expect(Object.keys(stagedSimulation)).toEqual([
+      'endEnergyKWh',
+      'endChargePercent',
+      'feasible',
+      'firstBreachIndex',
+      'coverage',
+    ])
+    expect(Object.keys(stagedBeforePolicy)).toEqual(['planId', 'planName', 'loadIds'])
+    expect(Object.keys(stagedAfterPolicy)).toEqual(['planId', 'planName', 'loadIds'])
+    expect(Object.keys(stagedDiff)).toEqual([
+      'addedLoadIds',
+      'removedLoadIds',
+      'unchangedLoadIds',
+      'changed',
+    ])
+    expect(stagedData).not.toHaveProperty('proposal')
+    expect(stagedData.simulation).not.toHaveProperty('intervals')
+    const expectedStageData = {
+      proposalId: stagedData.proposalId,
+      status: 'staged',
+      baseRevision: 1,
+      currentRevision: 1,
+      simulationId: stagedData.simulationId,
+      simulationFingerprint: stagedData.simulationFingerprint,
+      scenarioId: 'wattkeep-seed',
+      planId: 'balanced-night',
+      planName: 'Balanced Night',
+      assumptions: {
+        scenarioRevision: 1,
+        workspaceRevision: 1,
+        forecastKind: 'canonical',
+        battery: {
+          capacityKWh: 13.5,
+          startEnergyKWh: 10.53,
+          reserveKWh: 2.7,
+        },
+        outage: {
+          start: '18:00',
+          end: '06:00',
+          intervalHours: 1,
+          intervalCount: 12,
+        },
+        solarKWh: [0.15, 0.05, 0, 0, 0, 0, 0, 0, 0, 0, 0.05, 0.25],
+        reserveKWh: 2.7,
+      },
+      simulation: {
+        endEnergyKWh: stagedSimulation.endEnergyKWh,
+        endChargePercent: stagedSimulation.endChargePercent,
+        feasible: true,
+        firstBreachIndex: null,
+        coverage: 100,
+      },
+      beforePolicy: {
+        planId: 'essential-reserve',
+        planName: 'Essential Reserve',
+        loadIds: ['fridge', 'wifi', 'security', 'medical-cooler'],
+      },
+      afterPolicy: {
+        planId: 'balanced-night',
+        planName: 'Balanced Night',
+        loadIds: ['fridge', 'wifi', 'security', 'medical-cooler', 'lighting', 'fan', 'entertainment'],
+      },
+      diff: {
+        addedLoadIds: ['lighting', 'fan', 'entertainment'],
+        removedLoadIds: [],
+        unchangedLoadIds: ['fridge', 'wifi', 'security', 'medical-cooler'],
+        changed: true,
+      },
+    }
+    expect(stagedData).toEqual(expectedStageData)
+    const expectedStage = {
+      ok: true,
+      tool: 'stage_plan',
+      data: expectedStageData,
+      state: {
+        sessionEpoch: 1,
+        workspaceRevision: 1,
+        activeProposal: {
+          proposalId: stagedData.proposalId,
+          status: 'staged',
+        },
+        persistenceMode: 'memory-only',
+        nextActions: ['Request human review of the staged proposal.'],
+      },
+    }
+    expect(JSON.stringify(staged)).toBe(JSON.stringify(expectedStage))
+    expect(JSON.stringify(staged).length).toBeLessThan(1_500)
+
+    const reviewed = await toolFor(context, 'request_review').execute({
+      proposalId: staged.data.proposalId,
+    }, { signal: new AbortController().signal })
+    if (!reviewed.ok || typeof reviewed.data !== 'object' || reviewed.data === null) {
+      throw new Error('Expected a compact review result')
+    }
+    const reviewedData = reviewed.data as Record<string, unknown>
+    expect(Object.keys(reviewedData)).toEqual(Object.keys(expectedStageData))
+    expect(reviewedData).not.toHaveProperty('proposal')
+    expect(reviewedData).toEqual({ ...expectedStageData, status: 'review-requested' })
+    const expectedReview = {
+      ok: true,
+      tool: 'request_review',
+      data: { ...expectedStageData, status: 'review-requested' },
+      state: {
+        sessionEpoch: 1,
+        workspaceRevision: 1,
+        activeProposal: {
+          proposalId: stagedData.proposalId,
+          status: 'review-requested',
+        },
+        persistenceMode: 'memory-only',
+        nextActions: ['Review the staged proposal in the WattKeep interface.'],
+      },
+    }
+    expect(JSON.stringify(reviewed)).toBe(JSON.stringify(expectedReview))
+    expect(JSON.stringify(reviewed).length).toBeLessThan(1_500)
 
     const humanRefresh = store.human.refreshForecast()
     expect(humanRefresh.ok).toBe(true)
