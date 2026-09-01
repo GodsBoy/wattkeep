@@ -8,8 +8,10 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:unit": "vitest run",
+    "test:unit": "vitest run src",
     "test:contracts": "vitest run src/webmcp/contracts.test.ts src/webmcp/register-tools.test.ts",
+    "test:e2e": "playwright test tests/e2e",
+    "test:a11y": "playwright test tests/e2e/accessibility-responsive.spec.ts",
     "test:watch": "vitest",
     "typecheck": "tsc -b --pretty false"
   },
@@ -19,11 +21,13 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@babel/core": "8.0.1",
     "@babel/eslint-parser": "8.0.1",
     "@babel/plugin-syntax-jsx": "8.0.1",
     "@babel/plugin-syntax-typescript": "8.0.3",
     "@eslint/js": "10.0.1",
+    "@playwright/test": "1.62.1",
     "@testing-library/dom": "10.4.1",
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.3",
