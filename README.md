@@ -1,5 +1,7 @@
 # WattKeep
 
+![WattKeep outage resilience planner showing stored energy powering a home through the night](public/wattkeep-readme-cover.png)
+
 WattKeep is a fictional, anonymous, deterministic, local-first household outage-resilience planner for the OpenAI WebMCP Challenge.
 
 > You decide what must stay on. WattKeep makes the stored energy last.
