@@ -11,7 +11,7 @@ export default defineConfig({
     browserName: 'chromium',
     headless: true,
     launchOptions: {
-      executablePath: '/snap/bin/chromium',
+      executablePath: process.env.WATTKEEP_CHROMIUM_PATH ?? '/snap/bin/chromium',
       args: ['--no-sandbox'],
     },
     trace: 'retain-on-failure',
