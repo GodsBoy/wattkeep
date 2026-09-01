@@ -2,6 +2,8 @@
 
 ![WattKeep outage resilience planner showing stored energy powering a home through the night](public/wattkeep-readme-cover.png)
 
+**Live demo:** [Open WattKeep on GitHub Pages](https://godsboy.github.io/wattkeep/)
+
 WattKeep is a fictional, anonymous, deterministic, local-first household outage-resilience planner for the OpenAI WebMCP Challenge.
 
 > You decide what must stay on. WattKeep makes the stored energy last.
@@ -49,14 +51,12 @@ npm run build
 npm run preview
 ```
 
-For a GitHub Pages build that targets `https://godsboy.github.io/wattkeep/`:
+WattKeep is deployed to [GitHub Pages](https://godsboy.github.io/wattkeep/) through the manual-only `Deploy to GitHub Pages` workflow. The equivalent local Pages build and preview commands are:
 
 ```bash
 npm run build:pages
 npm run preview:pages
 ```
-
-The Pages workflow is manual-only and does not enable GitHub Pages or publish the site by itself. After the repository is configured to use GitHub Actions as its Pages source, run the `Deploy to GitHub Pages` workflow manually.
 
 The application is anonymous and local-first. It does not need an account, backend, device connection, or external service.
 
