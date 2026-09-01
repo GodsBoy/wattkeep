@@ -39,17 +39,14 @@ const eventName = (status: Proposal['status']): string => {
 }
 
 const policyLoads = (proposal: Proposal, policy: Proposal['beforePolicy']): string => {
-  const names = new Set<LoadId>(proposal.simulation.intervals.flatMap((interval) => (
-    interval.activeLoads.map((load) => load.loadId)
-  )))
+  const simulationLoads = proposal.simulation.intervals.flatMap((interval) => interval.activeLoads)
+  const names = new Set<LoadId>(simulationLoads.map((load) => load.loadId))
   // The policy is authoritative for the before/after diff. The simulation
   // load set above is only used as a safe fallback for old persisted proposals.
   return policy.loadIds.length === 0
     ? (names.size === 0 ? 'None' : [...names].join(', '))
     : policy.loadIds.map((loadId) => {
-      const load = proposal.simulation.intervals
-        .flatMap((interval) => interval.activeLoads)
-        .find((candidate) => candidate.loadId === loadId)
+      const load = simulationLoads.find((candidate) => candidate.loadId === loadId)
       return load?.name ?? loadId
     }).filter((name, index, values) => values.indexOf(name) === index).join(', ')
 }

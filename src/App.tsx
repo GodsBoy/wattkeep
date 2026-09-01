@@ -155,18 +155,6 @@ function App({
     setInteractionError(null)
     setExplanationError(null)
     try {
-      const simulations = await Promise.all(selectedPlanIds.map((planId) => (
-        store.agent.simulatePlan({
-          planId,
-          sessionEpoch: snapshot.sessionEpoch,
-        })
-      )))
-      const failedSimulation = simulations.find((outcome) => !outcome.ok)
-      if (failedSimulation !== undefined && !failedSimulation.ok) {
-        setInteractionError(formatError(failedSimulation.error))
-        announce(`${failedSimulation.error.code}: ${failedSimulation.error.message}`)
-        return
-      }
       const outcome = await store.agent.comparePlans({
         planIds: selectedPlanIds,
         sessionEpoch: snapshot.sessionEpoch,
@@ -372,8 +360,6 @@ function App({
       ? 'WebMCP tools registered'
       : 'Manual interface active'
 
-  const timelineSimulation = simulation
-
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -440,7 +426,7 @@ function App({
 
         <OutageTimeline
           scenario={snapshot.scenario}
-          simulation={timelineSimulation}
+          simulation={simulation}
           selectedInterval={selectedInterval}
           explanation={explanation}
           explanationError={explanationError}

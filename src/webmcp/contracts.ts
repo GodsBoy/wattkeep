@@ -3,14 +3,11 @@ import type {
   ProposalStatus,
   WattKeepStore,
 } from '../state/store'
+import { PLAN_IDS_IN_ORDER } from '../domain/scenario'
 import type { PlanId } from '../domain/types'
 import type { PersistenceMode } from '../state/persistence'
 
-export const PLAN_IDS = Object.freeze([
-  'essential-reserve',
-  'balanced-night',
-  'comfort-carry',
-] as const satisfies readonly PlanId[])
+export const PLAN_IDS: readonly PlanId[] = PLAN_IDS_IN_ORDER
 
 export type ToolName =
   | 'inspect_home'
@@ -238,7 +235,7 @@ const hasExactKeys = (
     return false
   }
 
-  return required.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+  return required.every((key) => Object.hasOwn(value, key))
 }
 
 const isBoundedString = (value: unknown): value is string => (
@@ -301,14 +298,14 @@ const validateStage = (
   if (!isRecord(input)
     || !hasExactKeys(input, ['simulationId'], ['replaceProposalId'])
     || !isBoundedString(input.simulationId)
-    || (Object.prototype.hasOwnProperty.call(input, 'replaceProposalId')
+    || (Object.hasOwn(input, 'replaceProposalId')
       && !isBoundedString(input.replaceProposalId))) {
     return invalidInput<StagePlanInput>('simulationId and replaceProposalId must be bounded strings.')
   }
 
   return {
     ok: true,
-    data: Object.prototype.hasOwnProperty.call(input, 'replaceProposalId')
+    data: Object.hasOwn(input, 'replaceProposalId')
       ? {
         simulationId: input.simulationId,
         replaceProposalId: input.replaceProposalId as string,

@@ -70,19 +70,7 @@ export interface PlanComparison {
   readonly ranked: readonly RankedPlan[]
 }
 
-export interface IntervalExplanation {
-  readonly index: number
-  readonly start: string
-  readonly end: string
-  readonly label: string
-  readonly solarKWh: number
-  readonly activeLoads: readonly SimulatedLoad[]
-  readonly loadKWh: number
-  readonly energyDeltaKWh: number
-  readonly openingEnergyKWh: number
-  readonly closingEnergyKWh: number
-  readonly reserveKWh: number
-  readonly reserveBreached: boolean
+export interface IntervalExplanation extends IntervalProjection {
   readonly explanation: string
   readonly accessibleExplanation: string
 }
@@ -316,7 +304,9 @@ const buildTradeOffReason = (
     return `Ranks ${ordinal(rank)} because it stays above the ${simulation.reserveKWh.toFixed(2)} kWh reserve and finishes with ${charge}.`
   }
 
-  const breach = simulation.intervals.find((interval) => interval.reserveBreached)
+  const breach = simulation.firstBreachIndex === null
+    ? undefined
+    : simulation.intervals[simulation.firstBreachIndex]
   const breachLabel = breach === undefined ? 'a later interval' : breach.label
 
   return `Ranks ${ordinal(rank)} because it breaches the ${simulation.reserveKWh.toFixed(2)} kWh reserve at ${breachLabel} and finishes with ${charge}.`

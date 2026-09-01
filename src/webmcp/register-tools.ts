@@ -68,10 +68,6 @@ const safeActions = (value: unknown, fallback: readonly string[]): readonly stri
     .map((action) => action.slice(0, MAX_ACTION_LENGTH)))
 }
 
-const isJsonObject = (value: unknown): value is Record<string, unknown> => (
-  isRecord(value)
-)
-
 type CompactJson = null | boolean | number | string | readonly CompactJson[] | {
   readonly [key: string]: CompactJson
 }
@@ -95,7 +91,7 @@ const compactJson = (value: unknown, depth = 0): CompactJson => {
   if (Array.isArray(value)) {
     return Object.freeze(value.slice(0, 64).map((item) => compactJson(item, depth + 1)))
   }
-  if (!isJsonObject(value)) {
+  if (!isRecord(value)) {
     return null
   }
 
@@ -112,7 +108,7 @@ const compactJson = (value: unknown, depth = 0): CompactJson => {
 
 const compactProposal = (value: unknown): CompactJson => {
   const proposal = compactJson(value)
-  if (!isJsonObject(proposal)) {
+  if (!isRecord(proposal)) {
     return proposal
   }
 

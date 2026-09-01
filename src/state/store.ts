@@ -29,7 +29,6 @@ import {
   clearPersistedState,
   PERSISTENCE_KEY,
   readPersistedState,
-  resolveStorage,
   writePersistedState,
   type PersistenceIssue,
   type PersistenceMode,
@@ -952,7 +951,7 @@ const hydratePersisted = (
 export const createStore = (options: StoreOptions = {}): WattKeepStore => {
   const storageKey = options.storageKey ?? PERSISTENCE_KEY
   const read = readPersistedState(options.storage, storageKey)
-  const storage = resolveStorage(options.storage)
+  const storage = read.storage
   const canonicalScenario = getScenario()
   const alternateScenario = getAlternateScenario()
 
@@ -993,10 +992,6 @@ export const createStore = (options: StoreOptions = {}): WattKeepStore => {
   })
 
   const listeners = new Set<(snapshot?: StoreSnapshot) => void>()
-  const discardedProposalIds = new Set<string>(current.journal
-    .filter((entry) => entry.event === 'proposal-discarded' && typeof entry.proposalId === 'string')
-    .map((entry) => entry.proposalId as string))
-
   type CapabilityState = 'active' | 'consumed' | 'invalidated'
   type InvalidationReason = 'competing-commit' | 'revision-conflict' | 'other-mutation'
   interface CapabilityRecord {
@@ -1252,16 +1247,24 @@ export const createStore = (options: StoreOptions = {}): WattKeepStore => {
     }
 
     const comparison = outcome.data
-    const cachedSimulations = comparison.ranked.reduce(
-      (entries, ranked) => cacheSimulations(entries, freezeDeep({
-        simulationId: ranked.simulation.simulationId,
-        sessionEpoch: invocationEpoch,
-        workspaceRevision: invocationRevision,
-        result: ranked.simulation,
-        simulation: ranked.simulation,
-      })),
-      current.simulations,
-    )
+    const simulationsAlreadyCached = comparison.ranked.every((ranked) => (
+      current.simulations.some((entry) => (
+        entry.simulationId === ranked.simulation.simulationId
+        && entry.workspaceRevision === invocationRevision
+      ))
+    ))
+    const cachedSimulations = simulationsAlreadyCached
+      ? current.simulations
+      : comparison.ranked.reduce(
+        (entries, ranked) => cacheSimulations(entries, freezeDeep({
+          simulationId: ranked.simulation.simulationId,
+          sessionEpoch: invocationEpoch,
+          workspaceRevision: invocationRevision,
+          result: ranked.simulation,
+          simulation: ranked.simulation,
+        })),
+        current.simulations,
+      )
     const comparisonEntry = freezeDeep({
       comparisonId: makeComparisonId(invocationScenario, planIds),
       sessionEpoch: invocationEpoch,
@@ -1272,7 +1275,7 @@ export const createStore = (options: StoreOptions = {}): WattKeepStore => {
       entry.comparisonId === comparisonEntry.comparisonId
       && entry.workspaceRevision === invocationRevision
     ))
-    if (existing === undefined || cachedSimulations !== current.simulations) {
+    if (existing === undefined || !simulationsAlreadyCached) {
       publish(nextSnapshot({
         simulations: cachedSimulations,
         comparisons: cacheComparisons(current.comparisons, comparisonEntry),
@@ -1713,7 +1716,10 @@ export const createStore = (options: StoreOptions = {}): WattKeepStore => {
     }
     const active = current.activeProposal
     if (active === null) {
-      if (discardedProposalIds.has(proposalId)) {
+      const alreadyDiscarded = current.journal.some((entry) => (
+        entry.event === 'proposal-discarded' && entry.proposalId === proposalId
+      ))
+      if (alreadyDiscarded) {
         return success({
           proposalId,
           alreadyDiscarded: true,
@@ -1734,7 +1740,6 @@ export const createStore = (options: StoreOptions = {}): WattKeepStore => {
       )
     }
 
-    discardedProposalIds.add(proposalId)
     const journal = appendJournal(current, 'proposal-discarded', {
       proposalId,
       planId: active.planId,
@@ -2138,7 +2143,6 @@ export const createStore = (options: StoreOptions = {}): WattKeepStore => {
     const cleared = clearPersistedState(storage, storageKey)
     const resetCanPersist = cleared.ok && storage !== null
     invalidateCapabilities('other-mutation')
-    discardedProposalIds.clear()
     publish(buildSnapshot({
       sessionEpoch,
       workspaceRevision: 1,

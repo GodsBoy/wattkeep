@@ -74,6 +74,11 @@ describe('WattKeep observable store', () => {
     expect(after.simulations).toHaveLength(1)
     expect(notifications).toBe(1)
 
+    expectSuccess(await store.agent.comparePlans(['essential-reserve', 'balanced-night']))
+    expect(notifications).toBe(2)
+    expectSuccess(await store.agent.comparePlans(['essential-reserve', 'balanced-night']))
+    expect(notifications).toBe(2)
+
     unsubscribe()
   })
 
