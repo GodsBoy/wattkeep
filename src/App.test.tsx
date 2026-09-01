@@ -39,6 +39,7 @@ describe('WattKeep manual control room', () => {
     expect(screen.getByText('2.70 kWh')).toBeInTheDocument()
     expect(screen.getByText('18:00 to 06:00')).toBeInTheDocument()
     expect(screen.getByText('No active proposal. Simulate a plan to begin.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'WattKeep home' })).toHaveAttribute('href', '/')
     await waitFor(() => expect(screen.getByText(/WebMCP is unavailable/i)).toBeInTheDocument())
     expect(screen.getByText('Manual interface active')).toBeInTheDocument()
   })

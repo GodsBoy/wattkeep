@@ -6,10 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:pages": "tsc -b && vite build --mode pages",
     "lint": "eslint .",
     "preview": "vite preview",
+    "preview:pages": "vite preview --mode pages",
     "test:unit": "vitest run src",
     "test:contracts": "vitest run src/webmcp/contracts.test.ts src/webmcp/register-tools.test.ts",
+    "test:pages": "node --test tests/pages-build.test.mjs",
     "test:e2e": "playwright test tests/e2e",
     "test:a11y": "playwright test tests/e2e/accessibility-responsive.spec.ts",
     "test:watch": "vitest",

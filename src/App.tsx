@@ -416,7 +416,7 @@ function App({
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="WattKeep home">
+        <a className="brand" href={import.meta.env.BASE_URL} aria-label="WattKeep home">
           <span className="brand-mark" aria-hidden="true"><Zap size={17} strokeWidth={1.8} /></span>
           <span>WattKeep</span>
         </a>

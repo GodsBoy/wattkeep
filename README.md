@@ -49,6 +49,15 @@ npm run build
 npm run preview
 ```
 
+For a GitHub Pages build that targets `https://godsboy.github.io/wattkeep/`:
+
+```bash
+npm run build:pages
+npm run preview:pages
+```
+
+The Pages workflow is manual-only and does not enable GitHub Pages or publish the site by itself. After the repository is configured to use GitHub Actions as its Pages source, run the `Deploy to GitHub Pages` workflow manually.
+
 The application is anonymous and local-first. It does not need an account, backend, device connection, or external service.
 
 ### Built with
